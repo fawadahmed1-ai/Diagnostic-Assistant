@@ -79,3 +79,86 @@ How to Run the Prototype
 This prototype demonstrates core RAG concepts in healthcare. For questions or expansions, refer to the code files.
 Last updated: February 26, 2026
 
+# MediGraph Diagnostic Assistant Prototype – Update (February 28, 2026)
+
+## Overview
+This document summarizes the progress made on February 28, 2026, building on the initial prototype completed on February 27, 2026.
+
+Today's focus:
+- Made image upload fully functional (triggers search with CLIP embedding)
+- Added hybrid search (text + image = averaged embeddings)
+- Added loading spinner, similarity threshold slider, and improved 3-column grid layout
+- Fixed full report text display (via re-upsert with "content" metadata)
+- Integrated LLM explanation for top match using Groq API (Llama 3.1 8B Instant)
+- Prepared for and deployed the app to Streamlit Community Cloud (public URL)
+- Resolved GitHub push issues (secret scanning, .gitignore, secrets exclusion)
+
+All core features from the planned combo are now implemented and tested locally.
+
+## Today's Achievements (Step-by-Step)
+
+1. **Image Upload & Search**
+   - Added file_uploader for PNG/JPG/JPEG
+   - Preview of uploaded image
+   - Automatic CLIP embedding of uploaded image
+   - Triggers Pinecone search (same as text query)
+
+2. **Hybrid Text + Image Search**
+   - When both text and image are provided → embeddings are averaged
+   - Simple but effective multimodal fusion
+   - Search source message in spinner ("text + uploaded image", etc.)
+
+3. **UX & Layout Improvements**
+   - Loading spinner during embedding & search
+   - Similarity threshold slider (0.0–1.0) with live filtering
+   - 3-column responsive grid for results
+   - Full report text displayed (up to 800 chars, truncated if longer)
+   - Captions, info boxes, and markdown separators for clarity
+
+4. **Full Report Text Fix**
+   - Re-ran embed_and_store.py with updated metadata:
+     "content": text
+   - App now shows actual report content instead of "No full content stored."
+
+5. **LLM Explanation (Groq API)**
+   - Added generate_explanation function using Groq's Llama 3.1 8B Instant
+   - Summarizes top match in 2–3 neutral sentences
+   - Shown in expandable section ("AI Summary of Top Match")
+   - Handles missing key gracefully
+
+6. **Deployment Preparation & Execution**
+   - Created requirements.txt (all dependencies listed)
+   - Added .gitignore (excluded .streamlit/secrets.toml)
+   - Pushed safe files to public GitHub repo
+   - Deployed to Streamlit Community Cloud
+   - Added secrets (PINECONE_API_KEY & GROQ_API_KEY) in Cloud settings
+
+## Current Status (as of February 28, 2026 – 02:33 AM PKT)
+
+- App fully functional locally:
+  - Text search
+  - Image upload + search
+  - Hybrid mode
+  - Threshold filtering
+  - Full report text
+  - LLM summary of top match
+
+- Deployed publicly on Streamlit Cloud (URL pending confirmation after secrets added)
+- No secrets exposed in GitHub repo
+
+## Remaining / Future Work (Suggestions)
+
+- Scale data: Add 200–500 more chest X-rays + labeled reports
+- Refine LLM prompt for more specific/radiology-focused summaries
+- UI polish: zoomable images, clear/reset button, dark mode tweaks
+- Add confidence visualization (e.g. bar for similarity)
+- Explore advanced multimodal models (e.g. CLIP fine-tuning or newer ViT)
+- Add basic patient context input (age, gender) for better filtering
+- Neo4j graph integration for symptom-disease linking (long-term)
+
+## How to Run Locally
+
+```bash
+cd C:\Users\FawadAhmed\MediGraph
+env\Scripts\activate
+streamlit run app.py
