@@ -13,11 +13,11 @@ import requests
 # ────────────────────────────────────────────────────────────────
 
 PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
-GROQ_API_KEY = st.secrets.get("GROQ_API_KEY")  # Optional
+GROQ_API_KEY     = st.secrets.get("GROQ_API_KEY")  # optional
 
-INDEX_NAME = "medigraph"
-IMAGE_FOLDER = "data/processed_images"
-TOP_K = 12
+INDEX_NAME       = "medigraph"
+IMAGE_FOLDER     = "data/processed_images"
+TOP_K            = 12
 DEFAULT_THRESHOLD = 0.30
 
 # ────────────────────────────────────────────────────────────────
@@ -39,41 +39,41 @@ index = pc.Index(INDEX_NAME)
 # Helpers
 # ────────────────────────────────────────────────────────────────
 
-def embed_text(text: str):
-    text_token = clip.tokenize([text]).to(device)
+def embed_text(text: str) -> list:
+    tokens = clip.tokenize([text]).to(device)
     with torch.no_grad():
-        features = clip_model.encode_text(text_token)
-    return features.cpu().numpy().flatten().tolist()
+        emb = clip_model.encode_text(tokens)
+    return emb.cpu().numpy().flatten().tolist()
 
-def embed_image(image: Image.Image):
-    img_tensor = clip_preprocess(image).unsqueeze(0).to(device)
+def embed_image(image: Image.Image) -> list:
+    tensor = clip_preprocess(image).unsqueeze(0).to(device)
     with torch.no_grad():
-        features = clip_model.encode_image(img_tensor)
-    return features.cpu().numpy().flatten().tolist()
+        emb = clip_model.encode_image(tensor)
+    return emb.cpu().numpy().flatten().tolist()
 
-def get_image_path(filename: str):
+def get_image_path(filename: str) -> str:
     return os.path.join(IMAGE_FOLDER, filename)
 
 def generate_explanation(top_match, query_text=""):
     if not GROQ_API_KEY:
-        return "LLM explanation unavailable (GROQ_API_KEY missing in secrets.toml)"
+        return "LLM summary unavailable (GROQ_API_KEY not set)"
 
     if not top_match:
         return "No top match to explain."
 
-    score = top_match['score']
-    meta = top_match['metadata']
-    source = meta.get('source', 'unknown')
+    score   = top_match['score']
+    meta    = top_match['metadata']
+    source  = meta.get('source', 'unknown')
     content = meta.get('content', 'No description')[:500]
 
     prompt = f"""
-    User query: "{query_text or 'uploaded image'}"
-    Top similar case: {source} (similarity {score:.3f})
-    Content: {content}
+User query: "{query_text or 'uploaded image'}"
+Top similar case: {source} (similarity {score:.3f})
+Content: {content}
 
-    Give a short, neutral summary (2-3 sentences) of why this case is relevant.
-    Do NOT give medical diagnosis or advice.
-    """
+Give a short, neutral summary (2–3 sentences) of why this case is relevant.
+Do NOT give medical diagnosis or advice.
+"""
 
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -92,38 +92,37 @@ def generate_explanation(top_match, query_text=""):
         r.raise_for_status()
         return r.json()['choices'][0]['message']['content'].strip()
     except Exception as e:
-        return f"Explanation unavailable ({str(e)})"
+        return f"Summary unavailable ({str(e)})"
 
 # ────────────────────────────────────────────────────────────────
 # UI
 # ────────────────────────────────────────────────────────────────
 
-st.set_page_config(page_title="MediGraph - Diagnostic Assistant", layout="wide")
+st.set_page_config(page_title="MediGraph Diagnostic Assistant", layout="wide")
 
 st.title("MediGraph Diagnostic Assistant")
-st.markdown("**Prototype**: Search chest X-rays and medical reports using text or image")
+st.markdown("**Prototype**: Multimodal search of chest X-rays and reports")
 
 # Inputs
 query = st.text_input(
     "Describe symptoms, findings or condition:",
-    placeholder="e.g. pneumonia, normal chest, cardiomegaly, bilateral infiltrates...",
+    placeholder="e.g. pneumonia, normal chest, cardiomegaly...",
     key="text_query"
 )
 
 threshold = st.slider(
-    "Min similarity to show",
+    "Min similarity",
     0.0, 1.0, DEFAULT_THRESHOLD, 0.05,
-    help="Only show matches ≥ this score (higher = stricter)"
+    help="Only show matches ≥ this score"
 )
 
 uploaded_file = st.file_uploader(
     "Upload your own chest X-ray (PNG/JPG/JPEG)",
-    type=["png", "jpg", "jpeg"],
-    help="Upload an image to find similar cases"
+    type=["png", "jpg", "jpeg"]
 )
 
 # ────────────────────────────────────────────────────────────────
-# Search logic (hybrid text + image)
+# Search Logic
 # ────────────────────────────────────────────────────────────────
 
 query_vector = None
@@ -151,22 +150,34 @@ elif query:
         query_vector = embed_text(query)
     search_source = f'text query: "{query}"'
 
-# Run search
 if query_vector is not None:
-    with st.spinner(f"Searching database using {search_source}..."):
-        results = index.query(
+    with st.spinner(f"Searching using {search_source}..."):
+        # Main query
+        main_results = index.query(
             vector=query_vector,
-            top_k=TOP_K * 2,
+            top_k=TOP_K * 4,
             include_metadata=True,
             include_values=False
         )
 
-        filtered_matches = [m for m in results['matches'] if m['score'] >= threshold]
+        # Force images
+        image_results = index.query(
+            vector=query_vector,
+            top_k=12,
+            filter={"type": "image"},
+            include_metadata=True,
+            include_values=False
+        )
+
+        # Combine & deduplicate
+        all_matches = main_results['matches'] + image_results['matches']
+        unique = {m['id']: m for m in all_matches}
+        filtered_matches = [m for m in unique.values() if m['score'] >= threshold]
 
         if not filtered_matches:
-            st.warning(f"No matches found above {threshold:.2f}")
+            st.warning(f"No matches ≥ {threshold:.2f}")
         else:
-            st.success(f"Found {len(filtered_matches)} matches above {threshold:.2f}")
+            st.success(f"Found {len(filtered_matches)} matches ≥ {threshold:.2f}")
 
             cols = st.columns(3)
             for i, match in enumerate(filtered_matches):
@@ -186,21 +197,18 @@ if query_vector is not None:
                     else:
                         img_path = get_image_path(source)
                         if os.path.exists(img_path):
-                            st.image(
-                                img_path,
-                                caption=f"Image: {source} (score {score:.3f})",
-                                width=300
-                            )
+                            st.image(img_path, caption=f"Image: {source} (score {score:.3f})", width=300)
                         else:
-                            st.error(f"Image not found: {source}")
+                            st.warning(f"Image not found: {source}")
 
                     st.markdown("---")
 
-            # LLM explanation
+            # LLM summary
             if filtered_matches:
-                top_match = filtered_matches[0]
+                top = filtered_matches[0]
                 with st.expander("AI Summary of Top Match"):
-                    explanation = generate_explanation(top_match, query or "uploaded image")
-                    st.write(explanation)
+                    expl = generate_explanation(top, query or "uploaded image")
+                    st.write(expl)
+
 else:
-    st.info("Enter a description or upload an image to start searching.")
+    st.info("Enter a description or upload an image to start.")
