@@ -7,13 +7,14 @@ import numpy as np
 from pinecone import Pinecone
 from io import BytesIO
 import requests
+import base64
 
 # ────────────────────────────────────────────────────────────────
 # CONFIG
 # ────────────────────────────────────────────────────────────────
 
 PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
-GROQ_API_KEY     = st.secrets.get("GROQ_API_KEY")  # optional
+GROQ_API_KEY     = st.secrets.get("GROQ_API_KEY")
 
 INDEX_NAME       = "medigraph"
 IMAGE_FOLDER     = "data/processed_images"
@@ -21,7 +22,7 @@ TOP_K            = 12
 DEFAULT_THRESHOLD = 0.30
 
 # ────────────────────────────────────────────────────────────────
-# Load CLIP (cached)
+# Load CLIP
 # ────────────────────────────────────────────────────────────────
 
 @st.cache_resource
@@ -54,6 +55,13 @@ def embed_image(image: Image.Image) -> list:
 def get_image_path(filename: str) -> str:
     return os.path.join(IMAGE_FOLDER, filename)
 
+def image_to_base64(img_path):
+    try:
+        with open(img_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode()
+    except:
+        return None
+
 def generate_explanation(top_match, query_text=""):
     if not GROQ_API_KEY:
         return "LLM summary unavailable (GROQ_API_KEY not set)"
@@ -61,30 +69,43 @@ def generate_explanation(top_match, query_text=""):
     if not top_match:
         return "No top match to explain."
 
-    score   = top_match['score']
-    meta    = top_match['metadata']
-    source  = meta.get('source', 'unknown')
-    content = meta.get('content', 'No description')[:500]
+    score = top_match['score']
+
+    if score < 0.45:
+        return "Similarity too low for a meaningful summary (score: {:.3f}).".format(score)
+
+    meta = top_match['metadata']
+    item_type = meta.get('type', 'unknown')
+    source = meta.get('source', 'unknown')
+    content = meta.get('content', '')
+
+    if item_type == "image" or not content.strip():
+        return (
+            f"**Top match is a similar chest X-ray** (file: {source}, similarity {score:.3f}). "
+            "No report available. Visual similarity suggests shared features — compare side-by-side."
+        )
 
     prompt = f"""
-User query: "{query_text or 'uploaded image'}"
-Top similar case: {source} (similarity {score:.3f})
-Content: {content}
+User query: "{query_text or 'uploaded chest X-ray'}"
 
-Give a short, neutral summary (2–3 sentences) of why this case is relevant.
-Do NOT give medical diagnosis or advice.
+Top matching case:
+- Source: {source}
+- Similarity: {score:.3f}
+- Content excerpt: {content[:1200]}
+
+Write a concise, neutral 2–4 sentence summary explaining relevance.
+Focus on overlapping findings (heart size, lung fields, infiltrates, effusion, cardiomegaly, etc.).
+No diagnosis, advice, or speculation.
+Factual only.
 """
 
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
 
     data = {
         "model": "llama-3.1-8b-instant",
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 150,
-        "temperature": 0.7
+        "temperature": 0.4
     }
 
     try:
@@ -101,37 +122,40 @@ Do NOT give medical diagnosis or advice.
 st.set_page_config(page_title="MediGraph Diagnostic Assistant", layout="wide")
 
 st.title("MediGraph Diagnostic Assistant")
-st.markdown("**Prototype**: Multimodal search of chest X-rays and reports")
+st.markdown("**Prototype**: Multimodal search of chest X-rays and reports using text or image")
 
-# Inputs
-query = st.text_input(
-    "Describe symptoms, findings or condition:",
-    placeholder="e.g. pneumonia, normal chest, cardiomegaly...",
-    key="text_query"
-)
+# Controlled input
+if "query_value" not in st.session_state:
+    st.session_state["query_value"] = ""
 
-threshold = st.slider(
-    "Min similarity",
-    0.0, 1.0, DEFAULT_THRESHOLD, 0.05,
-    help="Only show matches ≥ this score"
-)
+col1, col2 = st.columns([4, 1])
+with col1:
+    query = st.text_input(
+        "Describe symptoms, findings or condition:",
+        value=st.session_state["query_value"],
+        placeholder="e.g. pneumonia, normal chest, cardiomegaly...",
+        key="text_query"
+    )
 
-uploaded_file = st.file_uploader(
-    "Upload your own chest X-ray (PNG/JPG/JPEG)",
-    type=["png", "jpg", "jpeg"]
-)
+with col2:
+    threshold = st.slider("Min similarity", 0.0, 1.0, DEFAULT_THRESHOLD, 0.05)
 
-# ────────────────────────────────────────────────────────────────
-# Search Logic
-# ────────────────────────────────────────────────────────────────
+uploaded_file = st.file_uploader("Upload chest X-ray (PNG/JPG/JPEG)", type=["png", "jpg", "jpeg"])
+
+if st.button("Clear Search"):
+    st.session_state["query_value"] = ""
+    st.rerun()
+
+# ── Search Logic ─────────────────────────────────────────────────
 
 query_vector = None
 search_source = "nothing"
+uploaded_image = None
 
 if uploaded_file is not None:
     image_bytes = uploaded_file.read()
     uploaded_image = Image.open(BytesIO(image_bytes)).convert("RGB")
-    st.image(uploaded_image, caption="Uploaded image", width=300)
+    st.image(uploaded_image, caption="Uploaded image", width=400)
 
     with st.spinner("Embedding uploaded image..."):
         image_vector = embed_image(uploaded_image)
@@ -152,7 +176,6 @@ elif query:
 
 if query_vector is not None:
     with st.spinner(f"Searching using {search_source}..."):
-        # Main query
         main_results = index.query(
             vector=query_vector,
             top_k=TOP_K * 4,
@@ -160,7 +183,6 @@ if query_vector is not None:
             include_values=False
         )
 
-        # Force images
         image_results = index.query(
             vector=query_vector,
             top_k=12,
@@ -169,7 +191,6 @@ if query_vector is not None:
             include_values=False
         )
 
-        # Combine & deduplicate
         all_matches = main_results['matches'] + image_results['matches']
         unique = {m['id']: m for m in all_matches}
         filtered_matches = [m for m in unique.values() if m['score'] >= threshold]
@@ -179,29 +200,80 @@ if query_vector is not None:
         else:
             st.success(f"Found {len(filtered_matches)} matches ≥ {threshold:.2f}")
 
-            cols = st.columns(3)
-            for i, match in enumerate(filtered_matches):
-                score = match['score']
-                meta = match['metadata']
-                item_type = meta.get('type', 'unknown')
-                source = meta.get('source', 'unknown')
+            # Side-by-side comparison for image upload
+            if uploaded_image is not None:
+                with st.expander("Compare Uploaded Image with Top Matches", expanded=True):
+                    cols = st.columns(4)
+                    with cols[0]:
+                        st.image(uploaded_image, caption="**Your uploaded image**", use_container_width=True)
+                    for i, match in enumerate(filtered_matches[:3]):
+                        if match['metadata'].get('type') == 'image':
+                            source = match['metadata']['source']
+                            img_path = get_image_path(source)
+                            if os.path.exists(img_path):
+                                with cols[i + 1]:
+                                    st.image(img_path, caption=f"Match {i+1} ({source}, score {match['score']:.3f})", use_container_width=True)
 
-                with cols[i % 3]:
-                    st.markdown(f"**Match {i+1}** – Similarity: {score:.3f}")
+            # Tabs
+            tab_all, tab_images = st.tabs(["All Matches", "X-ray Images Only"])
 
-                    if item_type == "text":
-                        st.info("**Medical Report**")
-                        st.caption(f"File: {source}")
-                        content = meta.get('content', 'No full content stored.')
-                        st.markdown(content[:800] + "..." if len(content) > 800 else content)
-                    else:
-                        img_path = get_image_path(source)
-                        if os.path.exists(img_path):
-                            st.image(img_path, caption=f"Image: {source} (score {score:.3f})", width=300)
+            with tab_all:
+                cols = st.columns(3)
+                for i, match in enumerate(filtered_matches):
+                    score = match['score']
+                    meta = match['metadata']
+                    item_type = meta.get('type', 'unknown')
+                    source = meta.get('source', 'unknown')
+
+                    with cols[i % 3]:
+                        st.markdown(f"**Match {i+1}** – Similarity: {score:.3f}")
+
+                        if item_type == "text":
+                            st.info("**Medical Report**")
+                            st.caption(f"File: {source}")
+                            content = meta.get('content', 'No full content stored.')
+                            st.markdown(content[:800] + "..." if len(content) > 800 else content)
                         else:
-                            st.warning(f"Image not found: {source}")
+                            img_path = get_image_path(source)
+                            if os.path.exists(img_path):
+                                img_base64 = image_to_base64(img_path)
+                                if img_base64:
+                                    st.markdown(
+                                        f'<a href="data:image/png;base64,{img_base64}" target="_blank">'
+                                        f'<img src="data:image/png;base64,{img_base64}" style="width:100%; cursor:zoom-in;" /></a>',
+                                        unsafe_allow_html=True
+                                    )
+                                else:
+                                    st.image(img_path, caption=f"Image: {source} (score {score:.3f})", use_container_width=True)
+                            else:
+                                st.warning(f"Image not found: {source}")
 
-                    st.markdown("---")
+                        st.markdown("---")
+
+            with tab_images:
+                image_matches = [m for m in filtered_matches if m['metadata'].get('type') == 'image']
+                if not image_matches:
+                    st.info("No images match this query at current threshold.")
+                else:
+                    cols = st.columns(3)
+                    for i, match in enumerate(image_matches):
+                        score = match['score']
+                        source = match['metadata'].get('source', 'unknown')
+                        img_path = get_image_path(source)
+                        with cols[i % 3]:
+                            if os.path.exists(img_path):
+                                img_base64 = image_to_base64(img_path)
+                                if img_base64:
+                                    st.markdown(
+                                        f'<a href="data:image/png;base64,{img_base64}" target="_blank">'
+                                        f'<img src="data:image/png;base64,{img_base64}" style="width:100%; cursor:zoom-in;" /></a>',
+                                        unsafe_allow_html=True
+                                    )
+                                else:
+                                    st.image(img_path, caption=f"{source} (score {score:.3f})", use_container_width=True)
+                            else:
+                                st.warning(f"Missing image: {source}")
+                            st.markdown("---")
 
             # LLM summary
             if filtered_matches:
