@@ -5,10 +5,10 @@ from PIL import Image
 from pinecone import Pinecone
 
 # ────────────────────────────────────────────────────────────────
-# CONFIG - CHANGE THESE VALUES
+# CONFIG
 # ────────────────────────────────────────────────────────────────
 
-PINECONE_API_KEY = "pcsk_6miYSa_SiscdWtLR8NTmE2THiUkBvicVdapW2K7o9MEXdZjXgvCWxqKJ1JpEGoz8AvFqRP"  # ← YOUR REAL KEY HERE
+PINECONE_API_KEY = "pcsk_6miYSa_SiscdWtLR8NTmE2THiUkBvicVdapW2K7o9MEXdZjXgvCWxqKJ1JpEGoz8AvFqRP"
 
 INDEX_NAME = "medigraph"
 DIMENSION = 512
@@ -25,7 +25,7 @@ print(f"Using device: {device}")
 
 print("Loading CLIP model...")
 clip_model, clip_preprocess = clip.load("ViT-B/32", device=device)
-print("CLIP loaded.")
+print("CLIP model loaded.")
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
@@ -35,7 +35,7 @@ if INDEX_NAME not in pc.list_indexes().names():
         name=INDEX_NAME,
         dimension=DIMENSION,
         metric="cosine",
-        spec={"serverless": {"cloud": "aws", "region": "us-east-1"}}  # ← change region if needed
+        spec={"serverless": {"cloud": "aws", "region": "us-east-1"}}
     )
 else:
     print(f"Using existing index: {INDEX_NAME}")
@@ -43,7 +43,19 @@ else:
 index = pc.Index(INDEX_NAME)
 
 # ────────────────────────────────────────────────────────────────
-# Embedding functions (both return 512-dim vectors)
+# Clear index (safe version)
+# ────────────────────────────────────────────────────────────────
+
+try:
+    print("Attempting to clear index...")
+    index.delete(delete_all=True)
+    print("Index cleared successfully.")
+except Exception as e:
+    print(f"Delete failed (likely namespace empty): {e}")
+    print("Continuing with upsert anyway.")
+
+# ────────────────────────────────────────────────────────────────
+# Embedding functions
 # ────────────────────────────────────────────────────────────────
 
 def embed_text(text: str):
@@ -59,7 +71,7 @@ def embed_image(image_path: str):
     return features.cpu().numpy().flatten()
 
 # ────────────────────────────────────────────────────────────────
-# Main: Embed & Upsert
+# Collect vectors
 # ────────────────────────────────────────────────────────────────
 
 vectors = []
@@ -81,12 +93,12 @@ if os.path.exists(TEXT_DIR):
                     "metadata": {
                         "type": "text",
                         "source": filename,
-                        "content": text  # ← THIS IS THE FIX: full text stored
+                        "content": text
                     }
                 })
-                print(f"Embedded text: {vec_id}")
+                print(f"Embedded text: {vec_id} ({len(text)} chars)")
             except Exception as e:
-                print(f"Error on text file {filename}: {e}")
+                print(f"Error on text {filename}: {e}")
 else:
     print(f"Text directory not found: {TEXT_DIR}")
 
@@ -113,15 +125,23 @@ if os.path.exists(IMAGE_DIR):
 else:
     print(f"Image directory not found: {IMAGE_DIR}")
 
-# ── Upsert ───────────────────────────────────────────────────────
-if vectors:
-    print(f"Upserting {len(vectors)} vectors...")
-    try:
-        index.upsert(vectors=vectors)
-        print(f"Successfully upserted {len(vectors)} vectors!")
-    except Exception as e:
-        print(f"Upsert failed: {e}")
-else:
-    print("No items found to embed. Check data folders.")
+# ────────────────────────────────────────────────────────────────
+# Upsert in batches
+# ────────────────────────────────────────────────────────────────
 
-print("Script finished.")
+if vectors:
+    print(f"\nUpserting {len(vectors)} vectors in batches of 500...")
+    batch_size = 500
+    for i in range(0, len(vectors), batch_size):
+        batch = vectors[i:i + batch_size]
+        try:
+            index.upsert(vectors=batch)
+            print(f"Batch {i//batch_size + 1} successful ({len(batch)} vectors)")
+        except Exception as e:
+            print(f"Batch {i//batch_size + 1} failed: {e}")
+            break
+    print("Upsert finished.")
+else:
+    print("No vectors collected. Check data folders.")
+
+print("\nScript finished.")
