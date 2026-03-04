@@ -72,7 +72,7 @@ def generate_explanation(top_match, query_text=""):
     score = top_match['score']
 
     if score < 0.45:
-        return "Similarity too low for a meaningful summary (score: {:.3f}).".format(score)
+        return "Similarity too low for a meaningful summary (score: {:.3f})."
 
     meta = top_match['metadata']
     item_type = meta.get('type', 'unknown')
@@ -146,7 +146,9 @@ if st.button("Clear Search"):
     st.session_state["query_value"] = ""
     st.rerun()
 
-# ── Search Logic ─────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
+# Search Logic
+# ────────────────────────────────────────────────────────────────
 
 query_vector = None
 search_source = "nothing"
@@ -155,7 +157,7 @@ uploaded_image = None
 if uploaded_file is not None:
     image_bytes = uploaded_file.read()
     uploaded_image = Image.open(BytesIO(image_bytes)).convert("RGB")
-    st.image(uploaded_image, caption="Uploaded image", width=400)
+    st.image(uploaded_image, caption="Uploaded image", width="stretch")
 
     with st.spinner("Embedding uploaded image..."):
         image_vector = embed_image(uploaded_image)
@@ -176,6 +178,7 @@ elif query:
 
 if query_vector is not None:
     with st.spinner(f"Searching using {search_source}..."):
+        # Main query
         main_results = index.query(
             vector=query_vector,
             top_k=TOP_K * 4,
@@ -183,16 +186,25 @@ if query_vector is not None:
             include_values=False
         )
 
+        # Force more images with slight threshold boost
         image_results = index.query(
             vector=query_vector,
-            top_k=12,
+            top_k=20,  # increased for more images
             filter={"type": "image"},
             include_metadata=True,
             include_values=False
         )
 
         all_matches = main_results['matches'] + image_results['matches']
-        unique = {m['id']: m for m in all_matches}
+
+        # Deduplicate (keep highest score)
+        unique = {}
+        for m in all_matches:
+            mid = m['id']
+            if mid not in unique or m['score'] > unique[mid]['score']:
+                unique[mid] = m
+
+        # Filter by threshold
         filtered_matches = [m for m in unique.values() if m['score'] >= threshold]
 
         if not filtered_matches:
@@ -200,19 +212,19 @@ if query_vector is not None:
         else:
             st.success(f"Found {len(filtered_matches)} matches ≥ {threshold:.2f}")
 
-            # Side-by-side comparison for image upload
+            # Side-by-side comparison
             if uploaded_image is not None:
                 with st.expander("Compare Uploaded Image with Top Matches", expanded=True):
                     cols = st.columns(4)
                     with cols[0]:
-                        st.image(uploaded_image, caption="**Your uploaded image**", use_container_width=True)
+                        st.image(uploaded_image, caption="**Your uploaded image**", width="stretch")
                     for i, match in enumerate(filtered_matches[:3]):
                         if match['metadata'].get('type') == 'image':
                             source = match['metadata']['source']
                             img_path = get_image_path(source)
                             if os.path.exists(img_path):
                                 with cols[i + 1]:
-                                    st.image(img_path, caption=f"Match {i+1} ({source}, score {match['score']:.3f})", use_container_width=True)
+                                    st.image(img_path, caption=f"Match {i+1} ({source}, score {match['score']:.3f})", width="stretch")
 
             # Tabs
             tab_all, tab_images = st.tabs(["All Matches", "X-ray Images Only"])
@@ -244,7 +256,7 @@ if query_vector is not None:
                                         unsafe_allow_html=True
                                     )
                                 else:
-                                    st.image(img_path, caption=f"Image: {source} (score {score:.3f})", use_container_width=True)
+                                    st.image(img_path, caption=f"Image: {source} (score {score:.3f})", width="stretch")
                             else:
                                 st.warning(f"Image not found: {source}")
 
@@ -253,7 +265,7 @@ if query_vector is not None:
             with tab_images:
                 image_matches = [m for m in filtered_matches if m['metadata'].get('type') == 'image']
                 if not image_matches:
-                    st.info("No images match this query at current threshold.")
+                    st.info("No images in top results. Try lowering threshold or different query.")
                 else:
                     cols = st.columns(3)
                     for i, match in enumerate(image_matches):
@@ -270,7 +282,7 @@ if query_vector is not None:
                                         unsafe_allow_html=True
                                     )
                                 else:
-                                    st.image(img_path, caption=f"{source} (score {score:.3f})", use_container_width=True)
+                                    st.image(img_path, caption=f"{source} (score {score:.3f})", width="stretch")
                             else:
                                 st.warning(f"Missing image: {source}")
                             st.markdown("---")
